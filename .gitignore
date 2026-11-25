@@ -59,3 +59,7 @@ tmp_uploads/
 *.mkv
 *.webm
 # Note: .mp4 test files in tests/ are created programmatically
+
+# Ignore MP4 files except test fixtures
+*.mp4
+!tests/**/*.mp4
