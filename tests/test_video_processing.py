@@ -1,7 +1,7 @@
 """
 tests/test_video_processing.py
 ===============================
-Tests for video validation and frame extraction.
+Tests for video validation and frame extraction (16-frame sampling).
 Run with: py -m pytest tests/ -v
 """
 
@@ -9,18 +9,16 @@ import pytest
 import numpy as np
 import os
 import sys
-import tempfile
 import cv2
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+from src.config import NUM_FRAMES
 from src.video_processor import (
     validate_video,
     extract_frames,
     frames_to_thumbnails,
     VideoValidationError,
-    NUM_FRAMES,
-    IMAGE_SIZE,
 )
 
 
@@ -49,7 +47,6 @@ class TestVideoValidation:
             validate_video("/nonexistent/path/video.mp4")
 
     def test_validate_unsupported_extension_raises(self, tmp_path):
-        p = str(tmp_path / "test.txt")
         p_obj = tmp_path / "test.txt"
         p_obj.write_text("not a video")
         with pytest.raises(VideoValidationError, match="Unsupported"):
@@ -61,20 +58,22 @@ class TestFrameExtraction:
     def test_extract_correct_count(self, tmp_path):
         p = str(tmp_path / "test.mp4")
         make_test_video(p, num_frames=60)
-        frames, indices = extract_frames(p, num_frames=20)
-        assert len(frames) == 20
+        frames, indices = extract_frames(p, num_frames=NUM_FRAMES)
+        assert len(frames) == NUM_FRAMES
+        assert len(indices) == NUM_FRAMES
 
     def test_extract_short_video(self, tmp_path):
-        """Video with fewer frames than requested should still return num_frames (tiled)."""
+        """Video with fewer frames than requested should still return NUM_FRAMES (tiled)."""
         p = str(tmp_path / "short.mp4")
         make_test_video(p, num_frames=5)
-        frames, indices = extract_frames(p, num_frames=20)
-        assert len(frames) == 20
+        frames, indices = extract_frames(p, num_frames=NUM_FRAMES)
+        assert len(frames) == NUM_FRAMES
 
     def test_frames_are_numpy_arrays(self, tmp_path):
         p = str(tmp_path / "test.mp4")
         make_test_video(p)
         frames, _ = extract_frames(p)
+        assert len(frames) == NUM_FRAMES
         assert all(isinstance(f, np.ndarray) for f in frames)
         assert all(f.ndim == 3 for f in frames)
 

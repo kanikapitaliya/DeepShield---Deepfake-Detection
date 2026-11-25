@@ -1,65 +1,60 @@
 """
 src/model.py
 ============
-Exact ResNeXt50 + LSTM architecture as confirmed from the trained checkpoint.
+ResNeXt50 + LSTM visual deepfake detector (Model A).
 
-Architecture confirmed from checkpoint inspection (Phase 1):
-  - encoder: resnext50_32x4d feature extractor (8 layers, no FC, with global avg pool)
-  - lstm:    nn.LSTM(input_size=2048, hidden_size=2048, num_layers=1, batch_first=True)
-  - classifier: Dropout -> Linear(2048, 256) -> ReLU -> Dropout -> Linear(256, 1)
-
-Checkpoint metadata:
-  - num_frames = 20
-  - image_size = 224
-  - saved from cuda:0 (loaded with map_location='cpu')
+Architecture confirmed from checkpoint resnext50_lstm_v2_best.pt:
+  - encoder:     ResNeXt50_32x4d (layers 0-8, no FC, with global avg pool)
+  - lstm:        nn.LSTM(input_size=2048, hidden_size=256, num_layers=1, batch_first=True)
+  - classifier:  Dropout -> Linear(256,128) -> ReLU -> Dropout -> Linear(128,1)
+  - num_frames:  16
+  - image_size:  224
+  - epoch:       2
 """
 
+import os
 import torch
 import torch.nn as nn
 import torchvision.models as models
 import logging
 
-logger = logging.getLogger(__name__)
+from src.config import (
+    NUM_FRAMES, IMAGE_SIZE, CNN_FEATURE_DIM,
+    LSTM_HIDDEN, CLASSIFIER_HIDDEN, MODEL_A_PATH,
+)
 
-# Confirmed from checkpoint inspection
-NUM_FRAMES = 20
-IMAGE_SIZE = 224
-CNN_FEATURE_DIM = 2048
-LSTM_HIDDEN = 256
-CLASSIFIER_HIDDEN = 128
+logger = logging.getLogger(__name__)
 
 
 class DeepFakeDetector(nn.Module):
     """
-    ResNeXt50 + LSTM deepfake detector.
+    ResNeXt50 + LSTM deepfake detector — exact architecture as trained.
 
     Forward input:  [batch, num_frames, 3, 224, 224]
     Forward output: [batch, 1]  raw logit (apply sigmoid for probability)
-    Probability > 0.5 → FAKE
+
+    Also provides forward_embedding() that returns the 256-dim LSTM embedding,
+    used by Model C (hybrid fusion).
     """
 
-    def __init__(self, num_frames: int = NUM_FRAMES, dropout: float = 0.5):
+    def __init__(self, dropout: float = 0.4):
         super().__init__()
-        self.num_frames = num_frames
 
-        # --- Encoder: resnext50_32x4d without the final FC layer ---
-        # This matches encoder.0 through encoder.8 in the checkpoint.
+        # Encoder: resnext50_32x4d without the FC layer
         backbone = models.resnext50_32x4d(weights=None)
-        # Build Sequential identical to what was trained:
-        # [conv1, bn1, relu, maxpool, layer1, layer2, layer3, layer4, avgpool]
         self.encoder = nn.Sequential(
-            backbone.conv1,       # encoder.0
-            backbone.bn1,         # encoder.1
-            backbone.relu,        # encoder.2
-            backbone.maxpool,     # encoder.3
-            backbone.layer1,      # encoder.4  (3 Bottleneck blocks)
-            backbone.layer2,      # encoder.5  (4 Bottleneck blocks)
-            backbone.layer3,      # encoder.6  (6 Bottleneck blocks)
-            backbone.layer4,      # encoder.7  (3 Bottleneck blocks)
-            backbone.avgpool,     # encoder.8  (AdaptiveAvgPool2d(1,1))
+            backbone.conv1,    # encoder.0
+            backbone.bn1,      # encoder.1
+            backbone.relu,     # encoder.2
+            backbone.maxpool,  # encoder.3
+            backbone.layer1,   # encoder.4
+            backbone.layer2,   # encoder.5
+            backbone.layer3,   # encoder.6
+            backbone.layer4,   # encoder.7
+            backbone.avgpool,  # encoder.8  AdaptiveAvgPool2d(1,1)
         )
 
-        # --- LSTM: single layer, input=2048, hidden_size=256 ---
+        # LSTM: input=2048, hidden=256
         self.lstm = nn.LSTM(
             input_size=CNN_FEATURE_DIM,
             hidden_size=LSTM_HIDDEN,
@@ -67,86 +62,79 @@ class DeepFakeDetector(nn.Module):
             batch_first=True,
         )
 
-        # --- Classifier head: matches classifier.0–4 in checkpoint ---
+        # Classifier head
         self.classifier = nn.Sequential(
-            nn.Dropout(dropout),                        # classifier.0
-            nn.Linear(LSTM_HIDDEN, CLASSIFIER_HIDDEN),  # classifier.1 (256 -> 128)
-            nn.ReLU(inplace=True),                      # classifier.2
-            nn.Dropout(dropout),                        # classifier.3
-            nn.Linear(CLASSIFIER_HIDDEN, 1),            # classifier.4 (128 -> 1)
+            nn.Dropout(dropout),
+            nn.Linear(LSTM_HIDDEN, CLASSIFIER_HIDDEN),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(CLASSIFIER_HIDDEN, 1),
         )
+
+    def forward_embedding(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Extract the 256-dim visual embedding (last LSTM hidden state).
+        Args:
+            x: [B, T, 3, H, W]
+        Returns:
+            [B, 256]  — visual embedding for hybrid fusion
+        """
+        b, t, c, h, w = x.shape
+        z = self.encoder(x.reshape(b * t, c, h, w)).reshape(b, t, CNN_FEATURE_DIM)
+        _, (h_n, _) = self.lstm(z)
+        return h_n.squeeze(0)   # [B, 256]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x: [B, T, 3, H, W]  — batch of frame sequences
+            x: [B, T, 3, H, W]
         Returns:
-            [B, 1] raw logit (before sigmoid)
+            [B, 1]  raw logit
         """
-        b, t, c, h, w = x.shape
-
-        # Process all frames through the CNN encoder
-        x = x.view(b * t, c, h, w)          # [B*T, 3, H, W]
-        x = self.encoder(x)                  # [B*T, 2048, 1, 1]
-        x = x.view(b, t, CNN_FEATURE_DIM)   # [B, T, 2048]
-
-        # LSTM — use last hidden state
-        _, (h_n, _) = self.lstm(x)          # h_n: [1, B, 256]
-        x = h_n.squeeze(0)                  # [B, 256]
-
-        # Classifier
-        x = self.classifier(x)              # [B, 1]
-        return x
+        embedding = self.forward_embedding(x)   # [B, 256]
+        return self.classifier(embedding)        # [B, 1]
 
 
-def load_model(checkpoint_path: str, device: torch.device) -> DeepFakeDetector:
+def load_model(checkpoint_path: str = MODEL_A_PATH,
+               device: torch.device = None) -> DeepFakeDetector:
     """
     Load the trained DeepFakeDetector from a checkpoint file.
 
     Args:
         checkpoint_path: Path to the .pt checkpoint file.
-        device: torch.device to load onto.
+        device:          torch.device to load onto (default: auto-detect).
 
     Returns:
         model in eval mode on the given device.
 
     Raises:
-        FileNotFoundError: if checkpoint does not exist.
-        RuntimeError: if the state dict does not match the architecture.
+        FileNotFoundError: checkpoint does not exist.
+        RuntimeError:      state dict does not match architecture (strict=True).
     """
-    import os
+    if device is None:
+        from src.config import get_device
+        device = get_device()
+
     if not os.path.isfile(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-    logger.info(f"Loading checkpoint: {checkpoint_path}")
+    logger.info(f"Loading Model A checkpoint: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
-    # Checkpoint is a dict with 'model_state_dict' and metadata
     if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
         state_dict = checkpoint["model_state_dict"]
-        meta_frames = checkpoint.get("num_frames", NUM_FRAMES)
-        meta_size = checkpoint.get("image_size", IMAGE_SIZE)
         logger.info(
-            f"Checkpoint metadata — epoch: {checkpoint.get('epoch')}, "
-            f"num_frames: {meta_frames}, image_size: {meta_size}"
+            f"Checkpoint — epoch: {checkpoint.get('epoch')}, "
+            f"num_frames: {checkpoint.get('num_frames')}, "
+            f"image_size: {checkpoint.get('image_size')}, "
+            f"architecture: {checkpoint.get('architecture')}"
         )
     else:
-        # Fallback: checkpoint is the state dict itself
         state_dict = checkpoint
 
-    model = DeepFakeDetector(num_frames=NUM_FRAMES)
+    model = DeepFakeDetector()
     model.load_state_dict(state_dict, strict=True)
     model = model.to(device)
     model.eval()
-
-    logger.info("Model loaded successfully and set to eval mode.")
+    logger.info("Model A loaded successfully.")
     return model
-
-
-def get_device() -> torch.device:
-    """Return CUDA if available, otherwise CPU."""
-    if torch.cuda.is_available():
-        logger.info("CUDA available — using GPU.")
-        return torch.device("cuda")
-    logger.info("CUDA not available — using CPU.")
-    return torch.device("cpu")

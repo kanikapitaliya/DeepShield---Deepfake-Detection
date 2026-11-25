@@ -3,6 +3,11 @@
 /models/*.pt
 /models/*.pth
 /models/*.bin
+/models/*.joblib
+*.joblib
+
+# Sample videos (private / large binary files)
+sample_videos/
 
 # Python
 __pycache__/

@@ -1,48 +1,34 @@
-# DeepShield – Intelligent Video Deepfake Detection System
+# DeepShield – Multimodal Deepfake Detection & Video Forensic Analysis
 
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-blue)](https://python.org)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.1+-red)](https://pytorch.org)
 [![Gradio](https://img.shields.io/badge/Gradio-4.7+-orange)](https://gradio.app)
 [![MSc Project](https://img.shields.io/badge/MSc-Data%20Analytics-green)]()
 
-> **Academic Research Prototype** — MSc Data Analytics project.
+> **Academic Research Prototype** — MSc Data Analytics (MDA507-5), CHRIST University.
 
 ## Overview
 
-DeepShield is a video deepfake detection system that uses a **ResNeXt50 CNN + LSTM** architecture to identify manipulated facial videos. It was trained on the **FaceForensics++ (c23)** dataset and deployed as an interactive **Gradio** web application.
+DeepShield is a multimodal video deepfake detection system combining **visual spatiotemporal deep learning** with **physiological remote photoplethysmography (rPPG)** analysis, deployed as an interactive **Gradio** web application.
 
-The system processes an uploaded video by:
-1. Uniformly sampling **20 frames**
-2. Detecting and cropping faces using **MTCNN**
-3. Extracting deep visual features with **ResNeXt50**
-4. Analysing temporal patterns with a single-layer **LSTM**
-5. Producing a **REAL / FAKE** prediction with confidence score
+The inference pipeline processes an uploaded video through three coordinated models:
+1. **Model A (Visual):** Uniformly samples **16 frames**, detects faces with **OpenCV Haar Cascade** (central 80% crop, 224x224), and extracts a 256-dim spatiotemporal embedding via **ResNeXt50-32x4d + LSTM**.
+2. **Model B (Physiological):** Extracts **CHROM-rPPG** pulse signals from facial skin ROIs (requires >=8s duration and >=80% face tracking) and classifies 8 spectral/statistical features using an **ExtraTrees** classifier.
+3. **Model C (Hybrid Fusion):** Fuses the 256-dim visual embedding and 8-dim rPPG vector (264 dims total) via a calibrated **LogisticRegression** pipeline (`hybrid_fusion`). When rPPG quality criteria are not met, the system automatically falls back to Model C's `visual_only` pipeline.
 
 ---
 
-## Architecture
+## Verified Evaluation Results (Test Set)
 
-```
-Video
-  │
-  ├─ Frame Extraction (20 frames, uniform sampling)
-  │
-  ├─ Face Detection (MTCNN → crop → 224×224)
-  │
-  ├─ ResNeXt50 Encoder
-  │    └─ conv1 → bn1 → relu → maxpool
-  │       → layer1 (3 blocks) → layer2 (4 blocks)
-  │       → layer3 (6 blocks) → layer4 (3 blocks)
-  │       → AdaptiveAvgPool2d → [2048] feature vector per frame
-  │
-  ├─ LSTM (hidden=256, 1 layer, batch_first=True)
-  │    └─ Processes sequence of 20 frame features
-  │       Returns last hidden state → [256]
-  │
-  └─ Classifier
-       └─ Dropout → Linear(256→128) → ReLU → Dropout → Linear(128→1)
-          → sigmoid → P(FAKE) ∈ [0, 1]
-```
+Results loaded directly from `artifacts/model_a/`, `artifacts/model_b/`, and `artifacts/model_c/`:
+
+| Model / Pipeline | Accuracy | Balanced Accuracy | F1 Score | ROC-AUC | Threshold |
+|------------------|----------|-------------------|----------|---------|-----------|
+| **Model A** (ResNeXt50 + LSTM, n=41) | 70.7% | 69.5% | — | 0.670 | 0.51 |
+| **Model B** (CHROM-rPPG ExtraTrees) | 57.6% | 52.2% | — | 0.615 | 0.70 |
+| **Model C — Visual Only** | 78.8% | 76.1% | 0.857 | 0.802 | 0.52 |
+| **Model C — rPPG Only** | 69.7% | 54.7% | 0.808 | 0.676 | 0.51 |
+| **Model C — Hybrid Fusion** | **81.8%** | **78.0%** | **0.880** | **0.802** | 0.50 |
 
 ---
 
@@ -50,28 +36,33 @@ Video
 
 ```
 DeepShield/
-├── app.py                      # Gradio application entry point
-├── requirements.txt            # Python dependencies
+├── app.py                        # Gradio 5-tab application entry point
+├── requirements.txt              # Python dependencies
+├── DEVELOPMENT_PROGRESS.md       # Phase-by-phase build log
 ├── README.md
 │
-├── models/
-│   └── resnext50_lstm_best.pt  # Trained checkpoint (not in Git)
+├── models/                       # Trained model files (not committed to Git)
+│   ├── resnext50_lstm_v2_best.pt
+│   ├── model_b_rppg_classifier.joblib
+│   └── hybrid_models.joblib
 │
-├── artifacts/                  # Training evaluation outputs
-│   ├── test_metrics.json
-│   ├── classification_report.txt
-│   ├── confusion_matrix.png
-│   ├── roc_curve.png
-│   └── training_history.png
+├── artifacts/                    # Verified training/evaluation outputs
+│   ├── model_a/
+│   ├── model_b/
+│   └── model_c/
+│
+├── notebooks/                    # Authoritative training & evaluation notebooks
 │
 ├── src/
 │   ├── __init__.py
-│   ├── model.py                # Exact architecture + checkpoint loader
-│   ├── video_processor.py      # Video validation and frame extraction
-│   ├── face_detector.py        # MTCNN face detection and preprocessing
-│   ├── predictor.py            # End-to-end inference pipeline
-│   ├── explainability.py       # Grad-CAM spatial attention maps
-│   └── visualizations.py       # Metrics loading and HTML formatting
+│   ├── config.py                 # Central paths, constants (16 frames, 224x224), thresholds
+│   ├── model.py                  # ResNeXt50 + LSTM architecture & checkpoint loader
+│   ├── video_processor.py        # Video validation and 16-frame uniform sampling
+│   ├── face_detector.py          # Haar Cascade face detection & ImageNet preprocessing
+│   ├── rppg.py                   # CHROM-rPPG signal extraction & quality gating
+│   ├── inference_pipeline.py     # Unified 3-model pipeline with visual-only fallback
+│   ├── explainability.py         # Grad-CAM spatial attention maps (encoder.7[2].conv3)
+│   └── artifact_loader.py        # Loads verified metrics, reports, and plots
 │
 └── tests/
     ├── test_model_loading.py
@@ -81,136 +72,50 @@ DeepShield/
 
 ---
 
-## Technologies
-
-| Component | Library |
-|-----------|---------|
-| Deep Learning | PyTorch 2.1+ |
-| CNN Backbone | torchvision (ResNeXt50-32x4d) |
-| Video Processing | OpenCV |
-| Face Detection | facenet-pytorch (MTCNN) |
-| Web Interface | Gradio 4.7+ |
-| Explainability | Grad-CAM (custom implementation) |
-
----
-
-## Installation
+## Installation & Setup
 
 ### 1. Prerequisites
-- Python 3.10 or higher (`py --version`)
+- Python 3.10+ (`py --version` on Windows)
 - Git
 
-### 2. Clone the repository
+### 2. Clone & Install Dependencies
 ```bash
-git clone https://github.com/kanikapitaliya/DeepShield---Deepfake-Detection.git
+git clone https://github.com/kanikapitalya/DeepShield---Deepfake-Detection.git
 cd DeepShield---Deepfake-Detection
-```
-
-### 3. Create a virtual environment
-```bash
 py -m venv venv
-venv\Scripts\activate      # Windows
-# source venv/bin/activate  # Linux/Mac
-```
-
-### 4. Install dependencies
-```bash
+venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-> **GPU users:** Install PyTorch with CUDA support from [pytorch.org](https://pytorch.org/get-started/locally/) before running pip install.
+### 3. Place Trained Models
+Place the three trained model files inside `models/`:
+- `models/resnext50_lstm_v2_best.pt`
+- `models/model_b_rppg_classifier.joblib`
+- `models/hybrid_models.joblib`
 
-### 5. Add the model checkpoint
-Place `resnext50_lstm_best.pt` in the `models/` directory:
-```
-models/resnext50_lstm_best.pt
-```
-
----
-
-## Running the Application
-
+### 4. Run the Application
 ```bash
-# Standard launch (opens at http://127.0.0.1:7860)
 py app.py
-
-# Public shareable link (via Gradio tunnel)
-py app.py --share
-
-# Custom port
-py app.py --port 8080
+# Opens at http://127.0.0.1:7860
+# Optional flags: --port 8080, --share
 ```
 
----
-
-## Running Tests
-
+### 5. Run Tests
 ```bash
 py -m pytest tests/ -v
 ```
 
-Tests that require the checkpoint are automatically skipped if the file is not present.
+---
+
+## Known Limitations
+- **Academic Prototype:** Trained on FaceForensics++ (c23) subset; confidence scores are model probabilities, not forensic proof of authenticity.
+- **rPPG Constraints:** Physiological analysis requires at least 8 seconds of video and >=80% continuous frontal face tracking; short or heavily occluded videos automatically fall back to visual-only inference.
+- **Grad-CAM Scope:** Spatial attention maps reflect the ResNeXt50 encoder's final convolutional layer per frame and do not capture LSTM temporal reasoning.
 
 ---
 
-## Model & Dataset
-
-### Model
-- **Architecture:** ResNeXt50-32x4d CNN + LSTM
-- **Input:** 20 frames × 224×224 RGB
-- **Output:** Sigmoid probability P(FAKE)
-- **Decision threshold:** 0.5
-
-### Dataset
-- **FaceForensics++** — c23 (H.264 compression) subset
-- 4 manipulation methods: DeepFakes, Face2Face, FaceSwap, NeuralTextures
-- 1000 original + 4000 manipulated videos
-
----
-
-## Evaluation Results
-
-> Results from the actual saved training artifacts. Not altered or fabricated.
-
-| Metric | Value |
-|--------|-------|
-| Accuracy | 66.7% |
-| Precision (FAKE) | 0.67 |
-| Recall (FAKE) | 1.00 |
-| Recall (REAL) | 0.00 |
-| F1 Score (FAKE) | 0.80 |
-| ROC-AUC | 0.24 |
-| Test videos | 15 (10 FAKE, 5 REAL) |
-| Best epoch | 1 |
-
-### ⚠️ Important limitations
-
-- **Small test set:** Only 15 videos were used for evaluation — results are not statistically reliable.
-- **FAKE bias:** The model correctly identifies all FAKE videos but misclassifies all REAL videos as FAKE.
-- **Below-chance ROC-AUC:** An AUC of 0.24 indicates the model performs below random for distinguishing REAL from FAKE in a balanced setting.
-- **1 epoch of training:** The model was saved at its best checkpoint after 1 epoch, indicating significant underfitting.
-- **Not production-ready:** This prototype should not be used as evidence of authenticity.
-
----
-
-## Limitations & Future Work
-
-- [ ] Train for more epochs with learning rate scheduling
-- [ ] Increase training data and balance class distribution
-- [ ] Evaluate on FaceForensics++ full test split
-- [ ] Add data augmentation (flips, brightness, compression artifacts)
-- [ ] Experiment with bi-directional LSTM or Transformer-based temporal model
-- [ ] Cross-dataset evaluation (DFDC, Celeb-DF)
-- [ ] Improve face detection robustness for low-quality videos
-
----
-
-## Acknowledgements
-
-- [FaceForensics++](https://github.com/ondyari/FaceForensics) dataset
-- [facenet-pytorch](https://github.com/timesler/facenet-pytorch) for MTCNN implementation
-- [Gradio](https://gradio.app/) for the interactive interface
-
----
-
-*MSc Data Analytics · Academic Research Prototype · Not for production use*
+## Team
+- **Mohammed Owaiz Sherrif** — 2582425
+- **Darshan Gowda** — 2582439
+- **Pitaliya Kanika Shantilal** — 2582441
+- CHRIST University, MDA507-5

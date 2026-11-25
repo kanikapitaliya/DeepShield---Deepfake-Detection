@@ -3,8 +3,8 @@ src/video_processor.py
 ======================
 Video validation, frame extraction, and uniform temporal sampling.
 
-Training parameters confirmed from checkpoint:
-  - num_frames = 20
+Training confirmed from checkpoint:
+  - num_frames = 16
   - image_size = 224
 
 Frame sampling strategy: uniform sampling across the full video duration.
@@ -16,16 +16,11 @@ import cv2
 import numpy as np
 import logging
 import os
-import tempfile
-from typing import List, Tuple, Optional
+from typing import List, Tuple
+
+from src.config import NUM_FRAMES, IMAGE_SIZE, MAX_FILE_SIZE_MB, SUPPORTED_EXTENSIONS
 
 logger = logging.getLogger(__name__)
-
-# Confirmed from checkpoint metadata
-NUM_FRAMES = 20
-IMAGE_SIZE = 224
-MAX_FILE_SIZE_MB = 500
-SUPPORTED_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
 
 
 class VideoValidationError(Exception):
@@ -43,21 +38,18 @@ def validate_video(video_path: str) -> dict:
     if not os.path.isfile(video_path):
         raise VideoValidationError(f"File not found: {video_path}")
 
-    # Check extension
     ext = os.path.splitext(video_path)[1].lower()
     if ext not in SUPPORTED_EXTENSIONS:
         raise VideoValidationError(
             f"Unsupported format '{ext}'. Supported: {', '.join(SUPPORTED_EXTENSIONS)}"
         )
 
-    # Check file size
     size_mb = os.path.getsize(video_path) / (1024 * 1024)
     if size_mb > MAX_FILE_SIZE_MB:
         raise VideoValidationError(
             f"File too large ({size_mb:.1f} MB). Maximum: {MAX_FILE_SIZE_MB} MB."
         )
 
-    # Try opening with OpenCV
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise VideoValidationError("Could not open video file. It may be corrupted.")
@@ -92,7 +84,7 @@ def extract_frames(
     Uniformly sample `num_frames` frames from a video.
 
     Returns:
-        frames: list of BGR uint8 numpy arrays [H, W, 3]
+        frames:        list of BGR uint8 numpy arrays [H, W, 3]
         frame_indices: list of original frame indices selected
     """
     cap = cv2.VideoCapture(video_path)
@@ -104,11 +96,9 @@ def extract_frames(
         cap.release()
         raise VideoValidationError("Video has no readable frames.")
 
-    # Uniform sampling: pick evenly spaced indices across [0, total_frames)
     if total_frames >= num_frames:
         indices = np.linspace(0, total_frames - 1, num_frames, dtype=int).tolist()
     else:
-        # Fewer frames than needed — tile existing indices
         base = list(range(total_frames))
         indices = (base * (num_frames // total_frames + 1))[:num_frames]
         indices.sort()
@@ -123,12 +113,10 @@ def extract_frames(
         if ret:
             frames.append(frame)
         else:
-            # If a specific frame can't be read, duplicate the last good frame
             if frames:
                 frames.append(frames[-1].copy())
                 logger.warning(f"Frame {idx} could not be read; duplicating previous.")
             else:
-                # First frame failed — try sequential read
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 ret2, frame2 = cap.read()
                 if ret2:
@@ -148,7 +136,7 @@ def frames_to_thumbnails(
     max_thumbnails: int = 8,
 ) -> List[np.ndarray]:
     """
-    Convert a list of BGR frames to small RGB thumbnails for display.
+    Convert BGR frames to small RGB thumbnails for display.
     Returns at most `max_thumbnails` evenly sampled thumbnails.
     """
     if not frames:
