@@ -3,9 +3,6 @@
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-blue)](https://python.org)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.1+-red)](https://pytorch.org)
 [![Gradio](https://img.shields.io/badge/Gradio-4.7+-orange)](https://gradio.app)
-[![MSc Project](https://img.shields.io/badge/MSc-Data%20Analytics-green)]()
-
-> **Academic Research Prototype** — MSc Data Analytics (MDA507-5), CHRIST University.
 
 ## Overview
 
