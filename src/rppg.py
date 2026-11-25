@@ -73,21 +73,38 @@ def extract_rppg_features(
         features_dict: dict with 8 float features (or None if extraction fails)
         status_string: 'ok' on success, rejection reason on failure
     """
+    features, status, _ = extract_rppg_with_signal(
+        video_path, max_fps=max_fps, min_seconds=min_seconds
+    )
+    return features, status
+
+
+def extract_rppg_with_signal(
+    video_path: str,
+    max_fps: float = 30.0,
+    min_seconds: float = 8.0,
+) -> Tuple[Optional[Dict[str, float]], str, Optional[Dict[str, object]]]:
+    """
+    Extract 8 CHROM-rPPG features along with the underlying pulse waveform and PSD.
+
+    Returns:
+        (features_dict, status_string, signal_data)
+    """
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
-        return None, 'cannot_open'
+        return None, 'cannot_open', None
 
     fps = float(cap.get(cv2.CAP_PROP_FPS))
     nframes = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     if not np.isfinite(fps) or fps < 8 or nframes < 2:
         cap.release()
-        return None, 'invalid_fps_or_frames'
+        return None, 'invalid_fps_or_frames', None
 
     duration = nframes / fps
     if duration < min_seconds:
         cap.release()
-        return None, 'video_too_short'
+        return None, 'video_too_short', None
 
     step = max(1, int(np.ceil(fps / max_fps)))
     sample_fps = fps / step
@@ -139,42 +156,42 @@ def extract_rppg_features(
 
     arr = np.asarray(rgb_means, dtype=float)
     if len(arr) < int(min_seconds * sample_fps) or face_hits / max(1, len(arr)) < 0.80:
-        return None, 'insufficient_face_track'
+        return None, 'insufficient_face_track', None
 
     # Trim boundary NaN runs
     valid = np.isfinite(arr).all(axis=1)
     indices = np.flatnonzero(valid)
     if len(indices) == 0:
-        return None, 'no_valid_frames'
+        return None, 'no_valid_frames', None
     arr = arr[indices[0]:indices[-1] + 1]
     valid = np.isfinite(arr).all(axis=1)
 
     if len(arr) < int(min_seconds * sample_fps):
-        return None, 'insufficient_continuous_duration'
+        return None, 'insufficient_continuous_duration', None
 
     # Check for long internal NaN gaps (>0.5 s)
     gaps = np.diff(np.flatnonzero(valid))
     if len(gaps) > 0 and gaps.max() - 1 > int(0.5 * sample_fps):
-        return None, 'long_face_tracking_gap'
+        return None, 'long_face_tracking_gap', None
 
     # Interpolate remaining NaN gaps
     rgb = _interpolate_nan(arr)
 
     if sample_fps <= 6:
-        return None, 'invalid_sample_fps'
+        return None, 'invalid_sample_fps', None
 
     # Windowed CHROM (3.2 s, 50% overlap)
     try:
         pulse = _chrom_pulse(rgb, sample_fps)
     except Exception as e:
         logger.debug(f"CHROM failed: {e}")
-        return None, 'chrom_failed'
+        return None, 'chrom_failed', None
 
     if pulse is None:
-        return None, 'chrom_failed'
+        return None, 'chrom_failed', None
 
     if np.std(pulse) < 1e-6:
-        return None, 'low_signal_variance'
+        return None, 'low_signal_variance', None
 
     # Welch PSD
     freqs, power = welch(
@@ -184,7 +201,7 @@ def extract_rppg_features(
     )
     band = (freqs >= 0.7) & (freqs <= 3.0)
     if band.sum() < 3:
-        return None, 'insufficient_spectral_resolution'
+        return None, 'insufficient_spectral_resolution', None
 
     bf, bp = freqs[band], power[band]
     peak_i = int(np.argmax(bp))
@@ -207,9 +224,16 @@ def extract_rppg_features(
     }
 
     if not all(np.isfinite(v) for v in features.values()):
-        return None, 'nonfinite_features'
+        return None, 'nonfinite_features', None
 
-    return features, 'ok'
+    signal_data = {
+        'pulse': pulse,
+        'sample_fps': float(sample_fps),
+        'freqs': freqs,
+        'power': power,
+        'peak_hz': peak_hz,
+    }
+    return features, 'ok', signal_data
 
 
 def _interpolate_nan(arr: np.ndarray) -> np.ndarray:

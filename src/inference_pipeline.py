@@ -46,12 +46,14 @@ class InferenceResult:
     rppg_label: Optional[str] = None
     rppg_status: str = "not_run"        # rejection reason or 'ok'
     rppg_features: Optional[Dict[str, float]] = None
+    rppg_signal: Optional[Dict[str, Any]] = None
 
     # ── Video metadata ────────────────────────────────────────────────────────
     total_frames: int = 0
     faces_detected: int = 0
     video_meta: Dict[str, Any] = field(default_factory=dict)
     face_crops: List[np.ndarray] = field(default_factory=list)
+    sampled_frames: List[np.ndarray] = field(default_factory=list)
 
     # ── Timing / warnings ────────────────────────────────────────────────────
     inference_time_sec: float = 0.0
@@ -136,9 +138,9 @@ class InferencePipeline:
             MODEL_A_THRESHOLD, MODEL_B_THRESHOLD,
             MODEL_C_HYBRID_THRESHOLD, MODEL_C_VISUAL_ONLY_THRESHOLD,
         )
-        from src.video_processor import validate_video, extract_frames, VideoValidationError
+        from src.video_processor import validate_video, extract_frames, frames_to_thumbnails, VideoValidationError
         from src.face_detector import preprocess_frames, get_face_crops_for_display
-        from src.rppg import extract_rppg_features
+        from src.rppg import extract_rppg_with_signal
 
         t0 = time.perf_counter()
 
@@ -147,6 +149,7 @@ class InferencePipeline:
 
         # ── 2. Extract frames ────────────────────────────────────────────────
         frames_bgr, _ = extract_frames(video_path, num_frames=NUM_FRAMES)
+        sampled_frames = frames_to_thumbnails(frames_bgr, max_thumbnails=8)
 
         # ── 3. Face preprocessing ─────────────────────────────────────────────
         tensor, faces_detected = preprocess_frames(frames_bgr, image_size=IMAGE_SIZE)
@@ -168,9 +171,10 @@ class InferencePipeline:
         rppg_label = None
         rppg_status = "not_run"
         rppg_features = None
+        rppg_signal = None
 
         if self.model_b_bundle is not None:
-            feat_dict, status = extract_rppg_features(video_path)
+            feat_dict, status, sig_data = extract_rppg_with_signal(video_path)
             rppg_status = status
             if status == 'ok':
                 clf    = self.model_b_bundle['model']
@@ -182,6 +186,7 @@ class InferencePipeline:
                 rppg_label = "FAKE" if rppg_prob >= thresh else "REAL"
                 rppg_available = True
                 rppg_features = feat_dict
+                rppg_signal = sig_data
 
         # ── 6. Model C: hybrid fusion ─────────────────────────────────────────
         if self.model_c_bundle is not None:
@@ -246,10 +251,12 @@ class InferencePipeline:
             rppg_label=rppg_label,
             rppg_status=rppg_status,
             rppg_features=rppg_features,
+            rppg_signal=rppg_signal,
             total_frames=len(frames_bgr),
             faces_detected=faces_detected,
             video_meta=video_meta,
             face_crops=face_crops,
+            sampled_frames=sampled_frames,
             inference_time_sec=time.perf_counter() - t0,
             warning=warning,
         )
