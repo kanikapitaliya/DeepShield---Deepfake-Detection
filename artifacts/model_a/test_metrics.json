@@ -1,0 +1,27 @@
+{
+  "test_loss": 0.6552497687793913,
+  "threshold_selected_on_validation": 0.51,
+  "accuracy": 0.7073170731707317,
+  "balanced_accuracy": 0.6954022988505747,
+  "precision_fake": 0.84,
+  "recall_fake": 0.7241379310344828,
+  "f1_fake": 0.7777777777777778,
+  "specificity_real": 0.6666666666666666,
+  "test_videos": 41,
+  "best_epoch": 2,
+  "roc_auc": 0.6695402298850575,
+  "confusion_matrix": [
+    [
+      8,
+      4
+    ],
+    [
+      8,
+      21
+    ]
+  ],
+  "class_to_idx": {
+    "REAL": 0,
+    "FAKE": 1
+  }
+}
